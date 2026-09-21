@@ -505,15 +505,14 @@ class RayInitializer:
 
         selected_gpus = _parse_gpu_select(GPU_SELECT)
         if selected_gpus is None:
-            max_world_size = torch.cuda.device_count()
+            # for dgx spark 2-8x
+            max_world_size = 2 
         else:
-            visible_gpu_count = torch.cuda.device_count()
-            invalid = [gpu_idx for gpu_idx in selected_gpus if gpu_idx >= visible_gpu_count]
-            if invalid:
-                raise ValueError(f"GPU_SELECT contains GPU index outside visible range 0-{visible_gpu_count - 1}: {invalid}")
             max_world_size = len(selected_gpus)
-        if world_size > max_world_size:
-            raise ValueError(f"Too many gpus: requested {world_size} but only {max_world_size} selected/visible")
+
+        # if world_size > max_world_size:
+        #     raise ValueError(f"Too many gpus: requested {world_size} but only {max_world_size} selected/visible")
+        
         if world_size == 0:
             raise ValueError("Num of cuda/cudalike device is 0")
         if world_size < effective_ulysses_degree * effective_ring_degree * cfg_degree:
