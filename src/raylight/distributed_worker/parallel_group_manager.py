@@ -119,7 +119,31 @@ def initialize_xfuser_parallel(local_rank: int, world_size: int, parallel_dict: 
         xfuser_attn.set_attn_type(parallel_dict["attention"])
         xfuser_attn.set_sync_ulysses(parallel_dict["sync_ulysses"])
 
-    init_distributed_environment(rank=local_rank, world_size=world_size)
+    # 动态读取是否禁用编译
+    import os
+    if os.environ.get("TORCH_COMPILE_DISABLE") == "1":
+        import torch
+        if hasattr(torch, "_dynamo"):
+            torch._dynamo.disable()
+
+    # 动态读取超时时间
+    import torch.distributed as dist
+    import datetime
+    timeout_sec = int(os.environ.get("GLOO_TIMEOUT_SECONDS", 7200))
+    
+    original_init = dist.init_process_group
+    def patched_init(*args, **kwargs):
+        kwargs["timeout"] = datetime.timedelta(seconds=timeout_sec)
+        return original_init(*args, **kwargs)
+        
+    dist.init_process_group = patched_init
+    
+    try:
+        init_distributed_environment(rank=local_rank, world_size=world_size)
+    finally:
+        dist.init_process_group = original_init
+    # =========================================================================
+    
     initialize_model_parallel(
         data_parallel_degree=config.data_parallel_degree,
         sequence_parallel_degree=config.sequence_parallel_degree,
@@ -129,14 +153,34 @@ def initialize_xfuser_parallel(local_rank: int, world_size: int, parallel_dict: 
         pipeline_parallel_degree=config.pp_degree,
     )
 
-    rank_generator = RankGenerator(
-        1,
-        config.sequence_parallel_degree,
-        config.pp_degree,
-        config.cfg_degree,
-        config.data_parallel_degree,
-        "tp-sp-pp-cfg-dp",
-    )
+    # === 3. 动态匹配 xfuser RankGenerator 的参数，防止版本更新导致错位 ===
+    import inspect
+    sig = inspect.signature(RankGenerator.__init__)
+    kwargs = {}
+    
+    for param in sig.parameters:
+        if param == "self":
+            continue
+        elif param == "tp":
+            kwargs["tp"] = parallel_dict.get("tp_degree", 1)
+        elif param == "sp":
+            # 兼容前端传来的不同参数名（ulysses 或 sp）
+            kwargs["sp"] = parallel_dict.get("ulysses_degree", parallel_dict.get("sp_degree", 1))
+        elif param == "pp":
+            kwargs["pp"] = parallel_dict.get("pp_degree", 1)
+        elif param == "cfg":
+            kwargs["cfg"] = parallel_dict.get("cfg_degree", 1)
+        elif param == "dp":
+            kwargs["dp"] = parallel_dict.get("ring_degree", parallel_dict.get("dp_degree", 1))
+        elif param == "order":
+            kwargs["order"] = "tp-sp-pp-cfg-dp"
+        else:
+            # 对于 xfuser 新增的任何其他并行维度（如 cp, ep），一律默认赋值为 1
+            kwargs[param] = 1
+
+    rank_generator = RankGenerator(**kwargs)
+    # ====================================================================
+
     return XFuserParallelContext(
         config=config,
         rank_generator=rank_generator,
