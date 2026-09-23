@@ -181,7 +181,23 @@ def usp_dit_forward(self, x, timestep, context, transformer_options={}, minimax_
 
     video_seg = next((a, b, t_row[seg_t["video"]]) for a, b, k in layout.segments if k == "video")
     audio_seg = next((a, b, t_row[seg_t["audio"]]) for a, b, k in layout.segments if k == "audio")
-    v, a = self.final_layer(h, t_emb, video_seg, audio_seg)
+    
+    _sigma = transformer_options.get("sigmas") if "transformer_options" in locals() and transformer_options else None
+    _sample_sigmas = transformer_options.get("sample_sigmas") if "transformer_options" in locals() and transformer_options else None
+    _shifts = transformer_options.get("sample_shifts") if "transformer_options" in locals() and transformer_options else None
+
+    if "kwargs" in locals():
+        if _sigma is None: _sigma = kwargs.get("sigma", kwargs.get("sigmas"))
+        if _sample_sigmas is None: _sample_sigmas = kwargs.get("sample_sigmas")
+        if _shifts is None: _shifts = kwargs.get("shifts", kwargs.get("sample_shifts"))
+
+    # 动态检测当前环境里的 final_layer 需要几个参数，然后精准投喂
+    import inspect
+    _sig = inspect.signature(self.final_layer.forward)
+    if len(_sig.parameters) >= 7:
+        v, a = self.final_layer(h, t_emb, video_seg, audio_seg, _sigma, _sample_sigmas, _shifts)
+    else:
+        v, a = self.final_layer(h, t_emb, video_seg, audio_seg)
 
     video_out = unpatchify_video(v, latent_t, lat_h // 2, lat_w // 2, self.latents_dim, self.patch_size)
     video_out = video_out[:, :, :orig_t, :orig_h, :orig_w]
