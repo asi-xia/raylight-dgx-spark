@@ -130,6 +130,15 @@ def _install_envs_stub() -> None:
             return "hccl"
         return "gloo"
 
+    def get_device_name() -> str:
+        if _is_cuda() or _is_hip():
+            return "cuda"
+        if _is_musa():
+            return "musa"
+        if _is_npu():
+            return "npu"
+        return "cpu"
+
     class _PackagesChecker:
         def get_packages_info(self):
             return {
@@ -150,6 +159,7 @@ def _install_envs_stub() -> None:
     module._is_npu = _is_npu
     module.get_device = get_device
     module.get_torch_distributed_backend = get_torch_distributed_backend
+    module.get_device_name = get_device_name
     sys.modules[module.__name__] = module
 
 
