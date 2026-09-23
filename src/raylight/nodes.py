@@ -452,6 +452,11 @@ class RayInitializer:
                         "tooltip": "Use mmap-backed safetensor loading. This can reduce RAM spikes during model load, especially for large checkpoints.",
                     },
                 ),
+                "master_addr": ("STRING", {"default": "10.100.152.2", "tooltip": "主节点高速网卡IP"}),
+                "master_port": ("STRING", {"default": "29500"}),
+                "network_interface": ("STRING", {"default": "enp1s0f1np1", "tooltip": "例如: enp1s0f1np1 或 ib0, 留空则自动寻找"}),
+                "dist_timeout_sec": ("INT", {"default": 7200, "min": 60, "max": 86400, "tooltip": "多机编译与通信超时时间"}),
+                "disable_compile": ("BOOLEAN", {"default": True, "tooltip": "禁用 torch.compile 防止多机超时"}),
             },
         }
 
@@ -481,18 +486,26 @@ class RayInitializer:
         ray_object_store_gb: float = 2.0,
         ray_dashboard_address: str = "None",
         torch_dist_address: str = "None",
+        master_addr="10.100.152.2",
+        master_port="29500",
+        network_interface="",
+        dist_timeout_sec=7200,
+        disable_compile=True, 
     ):
         # THIS IS PYTORCH DIST ADDRESS
         # (TODO) Change so it can be use in cluster of nodes. but it is long waaaaay down in the priority list
         # os.environ['TORCH_CUDA_ARCH_LIST'] = ""
+        os.environ["MASTER_ADDR"] = master_addr
+        os.environ["MASTER_PORT"] = master_port
+        
         if torch_dist_address != "None":
             torch_host, torch_port = torch_dist_address.rsplit(":", 1)
             os.environ.setdefault("MASTER_ADDR", torch_host)
             os.environ.setdefault("MASTER_PORT", torch_port)
         else:
-            torch_host, torch_port = "127.0.0.1", "29500"
-            os.environ.setdefault("MASTER_ADDR", torch_host)
-            os.environ.setdefault("MASTER_PORT", torch_port)
+            #torch_host, torch_port = "10.100.53.2", "29500"
+            os.environ.setdefault("MASTER_ADDR", master_addr)
+            os.environ.setdefault("MASTER_PORT", master_port)
 
         # HF Tokenizer warning when forking
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -588,7 +601,26 @@ class RayInitializer:
         runtime_env_base = deepcopy(_RAY_RUNTIME_ENV_LOCAL)
         if ray_cluster_address not in _LOCAL_CLUSTER_ADDRESSES:
             runtime_env_base = deepcopy(_RAY_RUNTIME_ENV_REMOTE)
+        
+        runtime_env_base.setdefault("env_vars", {})["MASTER_ADDR"] = master_addr
+        runtime_env_base.setdefault("env_vars", {})["MASTER_PORT"] = master_port
+        
+        # 强制两台机器互相通信时，只走 200GbE 对应的 IP 段，防止走千兆网卡导致死锁超时
+        if network_interface.strip():
+            # 只有当用户填写了网卡名时，才强制绑定
+            nic = network_interface.strip()
+            runtime_env_base.setdefault("env_vars", {})["NCCL_SOCKET_IFNAME"] = nic
+            runtime_env_base.setdefault("env_vars", {})["GLOO_SOCKET_IFNAME"] = nic
+            runtime_env_base.setdefault("env_vars", {})["TP_SOCKET_IFNAME"] = nic
 
+        # 彻底禁用 torch.compile，防止两台机器因编译时间差超过 60 秒而互相踢下线
+        if disable_compile:
+            runtime_env_base.setdefault("env_vars", {})["TORCH_COMPILE_DISABLE"] = "1"
+        # 将 PyTorch 底层的分布式通讯超时时间从 60 秒强行拔高到 3600 秒（防范于未然）
+        runtime_env_base.setdefault("env_vars", {})["GLOO_TIMEOUT_SECONDS"] = str(dist_timeout_sec)
+        # ==========================================================
+
+        runtime_env_base.setdefault("env_vars", {})["NCCL_DEBUG"] = "INFO"
         if selected_gpus is not None:
             # Adapted from avtc's Ray GPU visibility restriction idea.
             runtime_env_base.setdefault("env_vars", {})["CUDA_VISIBLE_DEVICES"] = ",".join(str(gpu_idx) for gpu_idx in selected_gpus)
@@ -608,15 +640,23 @@ class RayInitializer:
             if restricted_cuda_visible_devices is not None:
                 os.environ["CUDA_VISIBLE_DEVICES"] = restricted_cuda_visible_devices
             try:
-                ray.init(
-                    ray_cluster_address,
-                    namespace=ray_cluster_namespace,
-                    runtime_env=deepcopy(runtime_env_base),
-                    object_store_memory=ray_object_store_gb,
-                    include_dashboard=enable_dashboard,
-                    dashboard_host=dashboard_host,
-                    dashboard_port=dashboard_port,
-                )
+                # 提取出允许发送给已存在集群的安全参数
+                ray_init_kwargs = {
+                    "namespace": ray_cluster_namespace,
+                    "runtime_env": deepcopy(runtime_env_base),
+                }
+                
+                # 只有在“本地单机闭环启动(local)”时，才附带内存和面板配置
+                if ray_cluster_address in _LOCAL_CLUSTER_ADDRESSES:
+                    ray_init_kwargs.update({
+                        "object_store_memory": ray_object_store_gb,
+                        "include_dashboard": enable_dashboard,
+                        "dashboard_host": dashboard_host,
+                        "dashboard_port": dashboard_port,
+                    })
+                
+                # 启动连接
+                ray.init(ray_cluster_address, **ray_init_kwargs)
             finally:
                 if restricted_cuda_visible_devices is not None:
                     if original_cuda_visible_devices is not None:
@@ -660,6 +700,11 @@ class RayInitializerAdvanced(RayInitializer):
                         "tooltip": "Ray cluster address. Use `local` for one machine, or a Ray head address for a remote cluster.",
                     },
                 ),
+                "master_addr": ("STRING", {"default": "10.100.152.2", "tooltip": "主节点高速网卡IP"}),
+                "master_port": ("STRING", {"default": "29500"}),
+                "network_interface": ("STRING", {"default": "enp1s0f1np1", "tooltip": "例如: enp1s0f1np1 或 ib0, 留空则自动寻找"}),
+                "dist_timeout_sec": ("INT", {"default": 7200, "min": 60, "max": 86400, "tooltip": "多机编译与通信超时时间"}),
+                "disable_compile": ("BOOLEAN", {"default": True, "tooltip": "禁用 torch.compile 防止多机超时"}),
                 "ray_cluster_namespace": (
                     "STRING",
                     {"default": "default", "tooltip": "Ray namespace used to isolate this session from other Ray jobs."},
