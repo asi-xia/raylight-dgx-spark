@@ -974,13 +974,7 @@ class RayUNETLoader:
 
                 else:
                     for actor in gpu_actors:
-                        loaded_futures.append(actor.load_unet.remote(unet_path, model_options=model_options))
-
-                    ray.get(loaded_futures)
-                    loaded_futures = []
-
-                    for actor in gpu_actors:
-                        loaded_futures.append(actor.set_state_dict.remote())
+                        ray.get(actor.load_unet.remote(unet_path, model_options=model_options))
 
             else:
                 # Multiple replicas — load model per group
@@ -1005,13 +999,7 @@ class RayUNETLoader:
 
                     else:
                         for actor in group_actors:
-                            loaded_futures.append(actor.load_unet.remote(unet_path, model_options=model_options))
-
-                        ray.get(loaded_futures)
-                        loaded_futures = []
-
-                        for actor in group_actors:
-                            loaded_futures.append(actor.set_state_dict.remote())
+                            ray.get(actor.load_unet.remote(unet_path, model_options=model_options))
 
             ray.get(loaded_futures)
             loaded_futures = []

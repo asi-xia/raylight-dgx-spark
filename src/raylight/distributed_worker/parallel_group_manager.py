@@ -19,7 +19,6 @@ from xfuser.core.distributed import (
     init_distributed_environment,
     initialize_model_parallel,
 )
-from xfuser.core.distributed.utils import RankGenerator
 
 
 def _normalized_degree(value: int | None) -> int:
@@ -62,7 +61,6 @@ class XFuserParallelConfig:
 @dataclass(frozen=True)
 class XFuserParallelContext:
     config: XFuserParallelConfig
-    rank_generator: RankGenerator
     global_rank: int
     global_world_size: int
     data_parallel_rank: int
@@ -73,9 +71,6 @@ class XFuserParallelContext:
     pipeline_world_size: int
     sequence_rank: int
     sequence_world_size: int
-
-    def get_rank_generator(self) -> RankGenerator:
-        return self.rank_generator
 
     def pp_group(self):
         return get_pp_group()
@@ -153,37 +148,10 @@ def initialize_xfuser_parallel(local_rank: int, world_size: int, parallel_dict: 
         pipeline_parallel_degree=config.pp_degree,
     )
 
-    # === 3. 动态匹配 xfuser RankGenerator 的参数，防止版本更新导致错位 ===
-    import inspect
-    sig = inspect.signature(RankGenerator.__init__)
-    kwargs = {}
+    #  RankGenerator 补丁删
     
-    for param in sig.parameters:
-        if param == "self":
-            continue
-        elif param == "tp":
-            kwargs["tp"] = parallel_dict.get("tp_degree", 1)
-        elif param == "sp":
-            # 兼容前端传来的不同参数名（ulysses 或 sp）
-            kwargs["sp"] = parallel_dict.get("ulysses_degree", parallel_dict.get("sp_degree", 1))
-        elif param == "pp":
-            kwargs["pp"] = parallel_dict.get("pp_degree", 1)
-        elif param == "cfg":
-            kwargs["cfg"] = parallel_dict.get("cfg_degree", 1)
-        elif param == "dp":
-            kwargs["dp"] = parallel_dict.get("ring_degree", parallel_dict.get("dp_degree", 1))
-        elif param == "order":
-            kwargs["order"] = "tp-sp-pp-cfg-dp"
-        else:
-            # 对于 xfuser 新增的任何其他并行维度（如 cp, ep），一律默认赋值为 1
-            kwargs[param] = 1
-
-    rank_generator = RankGenerator(**kwargs)
-    # ====================================================================
-
     return XFuserParallelContext(
         config=config,
-        rank_generator=rank_generator,
         global_rank=local_rank,
         global_world_size=world_size,
         data_parallel_rank=get_data_parallel_rank(),
